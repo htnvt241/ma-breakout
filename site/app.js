@@ -377,8 +377,9 @@
       const days = c.repairs.filter(x => x.kind === '補缺日'), fix = c.repairs.filter(x => x.kind === '修正價格');
       h += `<p><b>用官方資料（證交所、櫃買中心每日收盤行情）修正：</b>補回 Yahoo 整個市場都缺的交易日 ${days.length} 天` +
         (days.length ? `（${days.map(x => `${x.date} ${x.count} 檔`).join('、')}）` : '') + `；修正價格 ${fix.length} 筆。</p>`;
-      if (fix.length) h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>Yahoo 當日漲跌</th><th>官方當日漲跌</th></tr>' +
-        fix.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td>${pct(x.yahoo)}</td><td>${pct(x.official)}</td></tr>`).join('') + '</table>';
+      if (fix.length) h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>Yahoo 當日漲跌</th><th>官方當日漲跌</th><th>修正方式</th></tr>' +
+        fix.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td>${pct(x.yahoo)}</td><td>${pct(x.official)}</td><td class="muted">${x.how || ''}</td></tr>`).join('') + '</table>';
+      h += '<p class="muted">修正方式：「修正單日價格」＝只有那天 Yahoo 打錯（隔天就恢復）；「調整之前的還原價」＝從那天起 Yahoo 整段價格差一個比例（例如減資、配股沒調整好），所以把之前的還原價整段等比例調整，就像處理除權息一樣。</p>';
     }
     if (c.official && c.official.pending && c.official.pending.length)
       h += `<p>還有 ${c.official.pending.length} 個日子的官方資料這次沒抓完，下次更新會繼續。</p>`;

@@ -361,6 +361,25 @@ def scaled_row(prev, d, o, r):
     return (d, o[0] * k, o[1] * k, o[2] * k, raw, adj, vol)
 
 
+def fix_kind(rows, i, r, cal_idx):
+    """分辨錯誤種類：看隔天。
+    single＝只有這一天錯（例如多打兩個 0，隔天就恢復）→ 換掉這一天後，隔天的漲跌會變正常；
+    shift ＝從這天起 Yahoo 整段尺度不同（例如減資、配股沒調整好）→ 隔天本來就正常，要調整之前的價格。"""
+    if i + 1 >= len(rows):
+        return "single"
+    gap = (cal_idx.get(rows[i + 1][0], 0) - cal_idx.get(rows[i][0], 0)) or 1
+    up, dn = 1.105 ** gap, 0.895 ** gap
+    new_d = rows[i - 1][5] * r
+    nxt_single = rows[i + 1][5] / new_d       # 換掉這一天後，隔天的漲跌
+    nxt_shift = rows[i + 1][5] / rows[i][5]   # 調整之前價格的話，隔天的漲跌（不變）
+    ok = lambda x: dn <= x <= up              # noqa: E731
+    if ok(nxt_single) and not ok(nxt_shift):
+        return "single"
+    if ok(nxt_shift) and not ok(nxt_single):
+        return "shift"
+    return "single" if abs(nxt_single - 1) < abs(nxt_shift - 1) else "shift"
+
+
 def insert_row(rows, d, o):
     """把官方資料 o=[開,高,低,收,量,漲跌] 插進 rows（依日期排序）；已經有這天就不動。"""
     import bisect
@@ -488,47 +507,72 @@ def main():
     log(f"官方資料：檢查 {len(probe)} 個 Yahoo 缺的平日，補回 {len(added_days)} 個交易日"
         f"（假日 {sum(1 for d in probe if d in off.holidays)} 天）")
 
-    # (2) 可疑漲跌：先把需要的官方日子抓下來（最近的優先），再「依日期由舊到新」逐檔比對修正
-    cal = build_calendar(data, last_date)
-    cal_idx = {d: i for i, d in enumerate(cal)}
-    pre = []
-    for code, rows in data.items():
-        if len(rows) >= 2:
-            pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
-                               cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
-    need = {}
-    for x in pre:
-        need.setdefault(x["date"], set()).add(x["code"])
-    for d in sorted(need, reverse=True):
-        off.day(d, need[d])
-    fixed = 0
-    per_stock = {}
-    for x in pre:
-        per_stock.setdefault(x["code"], []).append(x["date"])
-    for code, ds in per_stock.items():
-        rows = data[code]
-        for d in sorted(ds):
-            v = off.cached(d, {code})
-            o = (v["tw"].get(code) or v["two"].get(code)) if v and v != NO_DATA else None
-            r = official_ret(o)
-            i = next((k for k, row in enumerate(rows) if row[0] == d), None)
-            if r is None or i is None or i == 0:
-                continue
-            p0 = cal_idx.get(rows[i - 1][0])
-            if p0 is None or cal_idx.get(d) != p0 + 1:
-                continue   # Yahoo 前一筆不是前一個交易日，無法確定，不動
-            y_ret = rows[i][5] / rows[i - 1][5]
-            if abs(y_ret / r - 1) > 0.01:
-                rows[i] = scaled_row(rows[i - 1], d, o, r)
-                repairs.append({"kind": "修正價格", "date": d, "code": code, "name": names.get(code, ""),
-                                "yahoo": round(y_ret - 1, 4), "official": round(r - 1, 4)})
+    # (2) 可疑漲跌：抓需要的官方日子（最近的優先），再「依日期由舊到新」逐檔比對修正。
+    #     修正後可能在隔天冒出新的可疑漲跌（Yahoo 從某天起整段價格尺度不對），所以重複最多 3 輪。
+    fixed, need_all, handled, pre = 0, {}, set(), []
+    for rnd in range(3):
+        cal = build_calendar(data, last_date)
+        cal_idx = {d: i for i, d in enumerate(cal)}
+        pre = []
+        for code, rows in data.items():
+            if len(rows) >= 2:
+                pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
+                                   cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
+        todo = [x for x in pre if (x["code"], x["date"]) not in handled]
+        if not todo:
+            break
+        need = {}
+        for x in todo:
+            need.setdefault(x["date"], set()).add(x["code"])
+            need_all.setdefault(x["date"], set()).add(x["code"])
+        for d in sorted(need, reverse=True):
+            off.day(d, need[d])
+        per_stock = {}
+        for x in todo:
+            per_stock.setdefault(x["code"], []).append(x["date"])
+        n_round = 0
+        for code, ds in per_stock.items():
+            rows = data[code]
+            for d in sorted(ds):
+                v = off.cached(d, {code})
+                if v is None:
+                    continue          # 這次沒抓到，下次再處理
+                handled.add((code, d))
+                o = (v["tw"].get(code) or v["two"].get(code)) if v != NO_DATA else None
+                r = official_ret(o)
+                i = next((k for k, row in enumerate(rows) if row[0] == d), None)
+                if r is None or i is None or i == 0:
+                    continue
+                p0 = cal_idx.get(rows[i - 1][0])
+                if p0 is None or cal_idx.get(d) != p0 + 1:
+                    continue   # Yahoo 前一筆不是前一個交易日，無法確定，不動
+                y_ret = rows[i][5] / rows[i - 1][5]
+                if abs(y_ret / r - 1) <= 0.01:
+                    continue
+                kind = fix_kind(rows, i, r, cal_idx)
+                if kind == "single":     # 只有這一天錯：換掉這一天
+                    rows[i] = scaled_row(rows[i - 1], d, o, r)
+                    label = "修正單日價格"
+                else:                    # 從這天起整段尺度不同：把之前的還原價整段等比例調整
+                    k = y_ret / r
+                    for j in range(i):
+                        rr = rows[j]
+                        rows[j] = (rr[0], rr[1], rr[2], rr[3], rr[4], rr[5] * k, rr[6])
+                    label = "調整之前的還原價"
+                repairs.append({"kind": "修正價格", "how": label, "date": d, "code": code,
+                                "name": names.get(code, ""), "yahoo": round(y_ret - 1, 4),
+                                "official": round(r - 1, 4)})
                 fixed += 1
-    for d, codes in need.items():
+                n_round += 1
+        log(f"  第 {rnd + 1} 輪：可疑漲跌 {len(todo)} 筆、{len(need)} 個日子，修正 {n_round} 筆")
+        if n_round == 0:
+            break
+    for d, codes in need_all.items():
         off.keep_only(d, codes)
-    pending = sorted(d for d in need if off.cached(d, need[d]) is None)
+    pending = sorted(d for d in need_all if off.cached(d, need_all[d]) is None)
     for x in [r for r in repairs if r["kind"] == "修正價格"][:25]:
-        log(f"  修正 {x['code']} {x['name']} {x['date']}：Yahoo 當日 {x['yahoo']:+.1%} → 官方 {x['official']:+.1%}")
-    log(f"官方資料：可疑漲跌 {len(pre)} 筆、{len(need)} 個日子，修正 {fixed} 筆；"
+        log(f"  修正 {x['code']} {x['name']} {x['date']}：Yahoo 當日 {x['yahoo']:+.1%} → 官方 {x['official']:+.1%}（{x['how']}）")
+    log(f"官方資料：修正 {fixed} 筆（{dict(Counter(x['how'] for x in repairs if x['kind'] == '修正價格'))}）；"
         f"本次新抓 {off.fetched} 天，抓失敗 {len(off.failed)} 天，時間不夠留到下次 {len(pending)} 天")
 
     # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
