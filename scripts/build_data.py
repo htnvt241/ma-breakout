@@ -526,6 +526,8 @@ def main():
     for d, codes in need.items():
         off.keep_only(d, codes)
     pending = sorted(d for d in need if off.cached(d, need[d]) is None)
+    for x in [r for r in repairs if r["kind"] == "修正價格"][:25]:
+        log(f"  修正 {x['code']} {x['name']} {x['date']}：Yahoo 當日 {x['yahoo']:+.1%} → 官方 {x['official']:+.1%}")
     log(f"官方資料：可疑漲跌 {len(pre)} 筆、{len(need)} 個日子，修正 {fixed} 筆；"
         f"本次新抓 {off.fetched} 天，抓失敗 {len(off.failed)} 天，時間不夠留到下次 {len(pending)} 天")
 
@@ -626,6 +628,7 @@ def main():
             if len(samples) < 40 and len(samples) < 15 * (1 + list(diag).index(k)):
                 samples.append(f"{x['code']} {x['date']} 還原{x['ret']:+.1%} 實際{raw_ret:+.1%} "
                                f"收盤 {rows[i - 1][4]:.2f}→{rows[i][4]:.2f} 還原 {rows[i - 1][5]:.3f}→{rows[i][5]:.3f} [{k}]")
+        log(f"剩下的可疑漲跌和官方比對：{dict(Counter(x.get('off') or '未比對' for x in flags))}")
         log(f"可疑漲跌分析：{diag}；涉及 {len(per_stock)} 檔，最多的：{per_stock.most_common(10)}")
         by_year = Counter(x["date"][:4] for x in flags)
         log(f"  依年份：{sorted(by_year.items())}")
