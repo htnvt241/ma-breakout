@@ -1,0 +1,70 @@
+name: 每日更新網站
+
+on:
+  schedule:
+    # GitHub 排程用 UTC 時間；排程偶爾會延遲或漏跑，所以一天排三次（每次都會重新產生整個網站）
+    - cron: "47 6 * * 1-5"    # 台灣 14:47，台股收盤後
+    - cron: "23 8 * * 1-5"    # 台灣 16:23（備援，也能接到 Yahoo 較晚修正的資料）
+    - cron: "41 10 * * 1-5"   # 台灣 18:41（備援）
+  workflow_dispatch:           # 也可以在 GitHub 網頁上手動按「Run workflow」
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  issues: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安裝套件
+        run: pip install requests numpy
+      - name: 抓資料、計算訊號、產生網站
+        env:
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: python scripts/build_data.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: 資料檢查有新問題就開 Issue 通知（會寄 email）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python scripts/check_report.py > report.md
+          status=ok
+          if [ "$JOB_STATUS" != "success" ]; then status=failed
+          elif [ -f _site/data/check.json ]; then
+            status=$(python -c "import json;print(json.load(open('_site/data/check.json'))['status'])")
+          fi
+          gh label create data-check --color d93f0b --description "資料檢查" --force >/dev/null 2>&1 || true
+          num=$(gh issue list --state open --label data-check --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ "$status" = "failed" ]; then title="❌ 網站這次沒有更新"; elif [ "$status" = "problem" ]; then title="⚠️ 股價資料檢查發現問題"; fi
+          if [ "$status" != "ok" ]; then
+            if [ -n "$num" ]; then gh issue comment "$num" -F report.md
+            else gh issue create --title "$title" --label data-check -F report.md; fi
+          elif [ -n "$num" ]; then
+            gh issue close "$num" -c "最新一次更新正常，自動關閉。"
+          fi
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

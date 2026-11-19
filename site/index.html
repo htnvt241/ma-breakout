@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>均線發散突破</title>
+<link rel="stylesheet" href="style.css">
+<script>try { if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="sub">台股 ・ 上市＋上櫃全部普通股</div>
+    <button id="theme" class="theme" title="切換日間／夜間"><span class="knob"></span><span id="themeLabel">夜間</span></button>
+  </header>
+  <h1>均線發散突破</h1>
+  <div class="chips">
+    <span class="chip">20MA &gt; 60MA &gt; 120MA</span><span class="plus">＋</span>
+    <span class="chip">收盤突破前 10 日最高收盤</span><span class="plus">＋</span>
+    <span class="chip">5、10、20MA 皆上揚，且 5MA 上升最快</span>
+  </div>
+  <div class="meta"><span class="chip strong" id="lastDate">載入中…</span> <span id="metaText"></span></div>
+  <hr>
+
+  <section id="chartCard" class="card hidden">
+    <div class="nav">
+      <button id="prevBtn">‹ 上一檔</button><button id="nextBtn">下一檔 ›</button>
+      <span class="muted mono" id="navPos"></span>
+    </div>
+    <div class="chart-head">
+      <div class="title"><b id="cTitle"></b><span class="muted" id="cTag"></span></div>
+      <div class="facts mono" id="cFacts"></div>
+      <div class="legend mono" id="cLegend"></div>
+      <div class="legend mono" id="cMA"></div>
+    </div>
+    <div id="chart" class="chart"></div>
+    <div class="chart-foot">
+      <span><i class="ln" style="background:var(--ma5)"></i>5MA</span>
+      <span><i class="ln" style="background:var(--ma10)"></i>10MA</span>
+      <span><i class="ln" style="background:var(--ma20)"></i>20MA</span>
+      <span><i class="ln" style="background:var(--ma60)"></i>60MA</span>
+      <span><i class="ln" style="background:var(--ma120)"></i>120MA</span>
+      <span><b class="accent">▲</b> 選取的訊號日</span>
+      <span class="muted">▲ 同一檔的其他訊號日</span>
+      <span class="muted">下方柱狀：成交量（張）</span>
+      <span class="muted">虛線：選取訊號日的收盤價</span>
+      <span class="muted">滾輪縮放、拖曳平移、雙擊還原；K 線為還原權值</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>訊號清單 <small class="muted" id="listCount"></small></h2>
+    <div class="filters">
+      <label>訊號日區間 <input type="date" id="fFrom"> 至 <input type="date" id="fTo"></label>
+      <label>跳到日期 <select id="fJump"></select></label>
+      <label>類型 <select id="fType">
+        <option value="first">只看首次訊號</option>
+        <option value="again">首次＋再次</option>
+        <option value="all">全部訊號</option>
+        <option value="cont">連續 N 天以上</option>
+      </select></label>
+      <label id="fNWrap" class="hidden">N <input type="number" id="fN" min="2" max="60" value="3"></label>
+      <label>市場 <select id="fMarket"><option value="">全部</option><option value="0">上市</option><option value="1">上櫃</option></select></label>
+      <input type="search" id="fQ" placeholder="代號或公司">
+    </div>
+
+    <div class="stats card" id="stats"></div>
+
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr id="thead"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="pager"><button id="pgPrev">‹ 上一頁</button><span id="pgText"></span><button id="pgNext">下一頁 ›</button></div>
+  </section>
+
+  <section class="notes muted">
+    <p>「首次」＝同一檔前 10 個交易日內沒有出現過訊號；「再次」＝前 10 個交易日內出現過訊號、中斷後當天再度符合；「連續」＝前一個交易日也符合，徽章上的數字是到該日為止連續幾個交易日符合。「跳到日期」不會過濾清單，只會把選取移到該日第一筆，之後可用方向鍵 ← → 或上一檔／下一檔繼續移動。</p>
+    <p>「nMA 5日」＝今天的 nMA ÷ 5 個交易日前的 nMA − 1（即「均線上揚」的比較天數）。+5／+10／+20 日、至今報酬都以還原收盤價計算：「至今報酬」＝最新收盤 ÷ 訊號日收盤 − 1；「至今最高／最低」為訊號隔天到最新收盤日之間的最高／最低收盤。「成交額」＝訊號日收盤價 × 成交量（不設門檻）。</p>
+    <p>上方「整體統計」依目前的篩選條件計算；「同期 0050」是每筆訊號同一段期間 0050（還原）的報酬，用來對照大盤；「超額」＝訊號平均報酬 − 同期 0050 平均報酬。只計入已經走完該天數的訊號。</p>
+    <p>資料保留 5 年（每月滾動，最早不早於 2022-01-01）。股票池只含目前仍上市櫃的股票，期間內已下市的股票不在內，報酬統計可能略為偏高。</p>
+    <details id="checkBox"><summary>資料檢查</summary><div id="checkBody">載入中…</div></details>
+    <hr>
+    <p>資料來源：Yahoo Finance（還原權值）、臺灣證券交易所 ISIN 公開資料（股票清單、產業別）。僅供研究討論，非投資建議。</p>
+  </section>
+</div>
+<script src="chart.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
