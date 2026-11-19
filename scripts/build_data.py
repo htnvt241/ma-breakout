@@ -18,6 +18,7 @@
 本機測試：設定環境變數 MOCK_DIR=資料夾，會改讀該資料夾的假資料，不連網（見 scripts/make_mock.py）。
 """
 import concurrent.futures as cf
+from collections import Counter
 import html
 import json
 import os
@@ -173,15 +174,15 @@ def fetch_stock_list():
     if MOCK_DIR:
         with open(os.path.join(MOCK_DIR, "stocks.json"), encoding="utf-8") as f:
             return json.load(f)
-    out = []
-    for mode, market in ((2, 0), (4, 1)):
-        r = http_get(f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}", timeout=90)
-        text = r.content.decode("cp950", "replace")
-        part = parse_isin(text, market)
+    def one(mode, market):
+        r = http_get(f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}", timeout=120)
+        part = parse_isin(r.content.decode("cp950", "replace"), market)
         log(f"股票清單 {'上市' if market == 0 else '上櫃'}：{len(part)} 檔")
         if len(part) < 300:
             raise RuntimeError(f"股票清單筆數異常（{len(part)}）")
-        out += part
+        return part
+    with cf.ThreadPoolExecutor(2) as ex:   # 兩頁同時抓
+        out = sum(ex.map(lambda a: one(*a), ((2, 0), (4, 1))), [])
     out.sort(key=lambda x: x[0])
     return out
 
@@ -338,15 +339,23 @@ def main():
     prev_meta = get_prev("data/meta.json")
     prev_check = get_prev("data/check.json") or {}
 
-    # 1. 股票清單
+    # 1. 股票清單（證交所網站很慢，一天只抓一次，同一天的其他次執行沿用前一版網站的清單）
+    prev_list = get_prev("data/stocks.json")
+    today_s = today.isoformat()
     try:
-        stocks = fetch_stock_list()
+        if prev_list and prev_list.get("list_date") == today_s and not MOCK_DIR:
+            stocks = prev_list.get("all") or prev_list["list"]
+            list_date = today_s
+            log(f"股票清單：沿用今天稍早抓的 {len(stocks)} 檔")
+        else:
+            stocks = fetch_stock_list()
+            list_date = today_s
     except Exception as e:  # noqa: BLE001
         log(f"股票清單抓取失敗：{e}，改用前一版網站的清單")
-        prev = get_prev("data/stocks.json")
-        if not prev:
+        if not prev_list:
             sys.exit("❌ 股票清單抓不到，前一版也沒有，停止發布")
-        stocks = prev["list"]
+        stocks = prev_list.get("all") or prev_list["list"]
+        list_date = prev_list.get("list_date", "")
 
     # 2. 大盤基準 0050
     bench = fetch_yahoo(BENCH[1], px_start)
@@ -382,7 +391,6 @@ def main():
                 log(f"  已處理 {done}/{len(stocks)}（{time.time() - t0:.0f} 秒）")
 
     # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
-    from collections import Counter
     cnt = Counter(d for rows in data.values() for d in {r[0] for r in rows})
     cal = sorted(d for d, k in cnt.items() if k >= 0.3 * max(1, len(data)))
     cal = [d for d in cal if d <= last_date]
@@ -468,13 +476,40 @@ def main():
 
     rows_out.sort(key=lambda r: (r[0], stock_list[r[1]][0]))
 
+    # 可疑漲跌的成因分析（寫在執行紀錄裡）
+    if flags:
+        diag = {"實際收盤也超過 10.5%": 0, "除權息調整造成": 0, "其他": 0}
+        per_stock = Counter(x["code"] for x in flags)
+        samples = []
+        for x in flags:
+            rows = data[x["code"]]
+            i = next(k for k, r in enumerate(rows) if r[0] == x["date"])
+            raw_ret = rows[i][4] / rows[i - 1][4] - 1
+            f0, f1 = rows[i - 1][5] / rows[i - 1][4], rows[i][5] / rows[i][4]
+            if abs(raw_ret) > 0.105:
+                k = "實際收盤也超過 10.5%"
+            elif abs(f1 / f0 - 1) > 0.01:
+                k = "除權息調整造成"
+            else:
+                k = "其他"
+            diag[k] += 1
+            if len(samples) < 40 and len(samples) < 15 * (1 + list(diag).index(k)):
+                samples.append(f"{x['code']} {x['date']} 還原{x['ret']:+.1%} 實際{raw_ret:+.1%} "
+                               f"收盤 {rows[i - 1][4]:.2f}→{rows[i][4]:.2f} 還原 {rows[i - 1][5]:.3f}→{rows[i][5]:.3f} [{k}]")
+        log(f"可疑漲跌分析：{diag}；涉及 {len(per_stock)} 檔，最多的：{per_stock.most_common(10)}")
+        by_year = Counter(x["date"][:4] for x in flags)
+        log(f"  依年份：{sorted(by_year.items())}")
+        for t in samples:
+            log("  " + t)
+
     # 5. 寫檔
     fields = ["d", "s", "t", "k", "c", "chg", "amt", "m5", "m10", "m20",
               "r5", "r10", "r20", "b5", "b10", "b20", "rn", "hi", "lo"]
     with open(os.path.join(OUT, "data", "signals.json"), "w", encoding="utf-8") as fh:
         json.dump({"fields": fields, "rows": rows_out}, fh, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(OUT, "data", "stocks.json"), "w", encoding="utf-8") as fh:
-        json.dump({"fields": ["code", "name", "market", "industry"], "list": stock_list},
+        json.dump({"fields": ["code", "name", "market", "industry"], "list": stock_list,
+                   "list_date": list_date, "all": stocks},
                   fh, ensure_ascii=False, separators=(",", ":"))
 
     latest = [r for r in rows_out if r[0] == last_date]
