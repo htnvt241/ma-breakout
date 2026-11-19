@@ -311,7 +311,9 @@ def check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first):
         if recent_resume:
             continue
         ret = adj[t] / adj[t - 1] - 1
-        if abs(ret) > 0.105 and dates[t] >= sig_start_s:
+        # 中間缺了幾個交易日（Yahoo 漏資料或零成交），上限就按天數複利放寬：缺 1 天 → ±21%
+        lim_up, lim_dn = 1.105 ** gap - 1, 1 - 0.895 ** gap
+        if (ret > lim_up or ret < -lim_dn) and dates[t] >= sig_start_s:
             flags.append({"code": code, "name": name, "kind": "big", "date": dates[t],
                           "ret": round(ret, 4)})
     return flags
@@ -478,7 +480,7 @@ def main():
 
     # 可疑漲跌的成因分析（寫在執行紀錄裡）
     if flags:
-        diag = {"實際收盤也超過 10.5%": 0, "除權息調整造成": 0, "其他": 0}
+        diag = {"實際收盤也超過上限": 0, "除權息調整造成": 0, "其他": 0}
         per_stock = Counter(x["code"] for x in flags)
         samples = []
         for x in flags:
@@ -487,7 +489,7 @@ def main():
             raw_ret = rows[i][4] / rows[i - 1][4] - 1
             f0, f1 = rows[i - 1][5] / rows[i - 1][4], rows[i][5] / rows[i][4]
             if abs(raw_ret) > 0.105:
-                k = "實際收盤也超過 10.5%"
+                k = "實際收盤也超過上限"
             elif abs(f1 / f0 - 1) > 0.01:
                 k = "除權息調整造成"
             else:
@@ -501,6 +503,9 @@ def main():
         log(f"  依年份：{sorted(by_year.items())}")
         for t in samples:
             log("  " + t)
+    miss_total = sum(g["days"] for g in gaps)
+    log(f"缺交易日：{len(gaps)} 檔、共 {miss_total} 天（停牌、零成交、或 Yahoo 漏資料）；"
+        f"缺最多：{[(g['code'], g['days']) for g in sorted(gaps, key=lambda g: -g['days'])[:10]]}")
 
     # 5. 寫檔
     fields = ["d", "s", "t", "k", "c", "chg", "amt", "m5", "m10", "m20",

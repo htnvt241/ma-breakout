@@ -368,7 +368,7 @@
     h += c.nodata.length ? `；完全抓不到 ${c.nodata.length} 檔（${c.nodata.slice(0, 30).join('、')}${c.nodata.length > 30 ? '…' : ''}）` : '';
     h += '。</p>';
     h += `<p><b>單日漲跌超過 ±10.5%（台股漲跌幅上限 10%，可能是資料錯誤）：${big.length} 筆</b>` +
-      `<br><span>已排除新上市前 5 天、停牌 3 天以上恢復交易後的前 5 天（這些日子沒有漲跌幅限制）。</span></p>`;
+      `<br><span>和前一筆資料之間缺了交易日時，上限按天數放寬（缺 1 天約 ±21%）；已排除新上市前 5 天、停牌 3 天以上恢復交易後的前 5 天（這些日子沒有漲跌幅限制）。</span></p>`;
     if (big.length) {
       h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>漲跌</th></tr>' +
         big.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td></tr>`).join('') +
