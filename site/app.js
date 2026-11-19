@@ -375,6 +375,7 @@
         '</table>';
       if (big.length > 100) h += `<p>（只列最近 100 筆）</p>`;
     }
+    if (c.bench_missing && c.bench_missing.length) h += `<p>0050（大盤對照）在 Yahoo 缺少的交易日：${c.bench_missing.join('、')}（這幾天開始或結束的訊號，同期 0050 欄位會空白）</p>`;
     h += `<p>最新交易日沒有成交資料（可能停牌）：${c.stale.length} 檔${c.stale.length ? '（' + c.stale.slice(0, 40).map(x => `${x.code} ${esc(x.name)}`).join('、') + '）' : ''}</p>`;
     h += `<p>期間內有缺少交易日的股票（多半是停牌）：${c.gaps_total} 檔${c.gaps.length ? '，缺最多的：' + c.gaps.slice(0, 15).map(x => `${x.code} ${esc(x.name)} ${x.days} 天`).join('、') : ''}</p>`;
     $('checkBody').innerHTML = h;

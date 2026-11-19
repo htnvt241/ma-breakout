@@ -305,7 +305,8 @@ def check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first):
         listed_new = dates[0] > fetch_first
         if (listed_new and t < 5):
             continue
-        recent_resume = any((pos[j] - pos[j - 1]) >= 3 for j in range(max(1, t - 4), t + 1))
+        recent_resume = any(pos[j] is None or pos[j - 1] is None or (pos[j] - pos[j - 1]) >= 3
+                            for j in range(max(1, t - 4), t + 1))
         if recent_resume:
             continue
         ret = adj[t] / adj[t - 1] - 1
@@ -379,6 +380,18 @@ def main():
                 failed.append(s)
             if done % 200 == 0:
                 log(f"  已處理 {done}/{len(stocks)}（{time.time() - t0:.0f} 秒）")
+
+    # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
+    from collections import Counter
+    cnt = Counter(d for rows in data.values() for d in {r[0] for r in rows})
+    cal = sorted(d for d, k in cnt.items() if k >= 0.3 * max(1, len(data)))
+    cal = [d for d in cal if d <= last_date]
+    cal_idx = {d: i for i, d in enumerate(cal)}
+    bench_dates = {r[0] for r in bench}
+    bench_missing = [d for d in cal if d not in bench_dates and d >= sig_start_s]
+    if bench_missing:
+        log(f"0050 在 Yahoo 缺少 {len(bench_missing)} 個交易日：{', '.join(bench_missing[:20])}")
+    log(f"交易日曆 {len(cal)} 天（{cal[0]} ~ {cal[-1]}）")
 
     fresh = len(data)
     reused, nodata = [], []
@@ -496,6 +509,7 @@ def main():
         "big": flags, "new_big": new_big, "new_reused": new_reused,
         "stale": stale, "gaps": sorted(gaps, key=lambda x: -x["days"])[:200],
         "gaps_total": len(gaps),
+        "bench_missing": bench_missing,
     }
     with open(os.path.join(OUT, "data", "check.json"), "w", encoding="utf-8") as fh:
         json.dump(check, fh, ensure_ascii=False, indent=1)
