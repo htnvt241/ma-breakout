@@ -34,6 +34,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import signals as S  # noqa: E402
+from official import NO_DATA, Official, weekdays  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE_SRC = os.path.join(ROOT, "site")
@@ -47,6 +48,7 @@ PX_BUFFER_MONTHS = 13            # 價格多留的暖機期間
 MIN_FRESH_RATIO = 0.90           # 至少 90% 股票要抓到新資料才發布
 FETCH_TIME_BUDGET = 40 * 60      # 抓資料最多 40 分鐘，超過的沿用舊資料
 WORKERS = 6
+OFFICIAL_BUDGET = 25 * 60       # 每次最多花 25 分鐘抓官方資料，沒抓完的下次繼續（抓過的會存起來）
 BENCH = ("0050", "0050.TW")
 
 TPE = timezone(timedelta(hours=8))
@@ -331,6 +333,38 @@ def ymd_int(d):
     return int(d.replace("-", ""))
 
 
+def build_calendar(data, last_date):
+    cnt = Counter(d for rows in data.values() for d in {r[0] for r in rows})
+    cal = sorted(d for d, k in cnt.items() if k >= 0.3 * max(1, len(data)) and d <= last_date)
+    return cal
+
+
+def pick_factor(rows, i, own):
+    """還原係數（還原價÷實際價）：自己的係數在前後兩天之間就用自己的，否則用後一天的。"""
+    prev = rows[i - 1][5] / rows[i - 1][4] if i > 0 else None
+    nxt = rows[i + 1][5] / rows[i + 1][4] if i + 1 < len(rows) else None
+    cands = [x for x in (prev, nxt) if x]
+    if not cands:
+        return own
+    if min(cands) * 0.995 <= own <= max(cands) * 1.005:
+        return own
+    return nxt or prev
+
+
+def insert_row(rows, d, o):
+    """把官方資料 o=[開,高,低,收,量] 插進 rows（依日期排序）；已經有這天就不動。"""
+    import bisect
+    ds = [r[0] for r in rows]
+    i = bisect.bisect_left(ds, d)
+    if i < len(rows) and rows[i][0] == d:
+        return False
+    if i == 0 or i == len(rows):   # 不在這檔股票的資料期間內（還沒上市、或已經是最後一天之後）
+        return False
+    f = rows[i][5] / rows[i][4]     # 用後一天的還原係數
+    rows.insert(i, (d, o[0], o[1], o[2], o[3], o[3] * f, o[4]))
+    return True
+
+
 def main():
     t0 = time.time()
     now = datetime.now(TPE)
@@ -396,17 +430,6 @@ def main():
             if done % 200 == 0:
                 log(f"  已處理 {done}/{len(stocks)}（{time.time() - t0:.0f} 秒）")
 
-    # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
-    cnt = Counter(d for rows in data.values() for d in {r[0] for r in rows})
-    cal = sorted(d for d, k in cnt.items() if k >= 0.3 * max(1, len(data)))
-    cal = [d for d in cal if d <= last_date]
-    cal_idx = {d: i for i, d in enumerate(cal)}
-    bench_dates = {r[0] for r in bench}
-    bench_missing = [d for d in cal if d not in bench_dates and d >= sig_start_s]
-    if bench_missing:
-        log(f"0050 在 Yahoo 缺少 {len(bench_missing)} 個交易日：{', '.join(bench_missing[:20])}")
-    log(f"交易日曆 {len(cal)} 天（{cal[0]} ~ {cal[-1]}）")
-
     fresh = len(data)
     reused, nodata = [], []
     for s in failed:
@@ -420,6 +443,82 @@ def main():
     log(f"抓到新資料 {fresh}/{len(stocks)}（{ratio:.1%}），沿用舊資料 {len(reused)}，沒有資料 {len(nodata)}")
     if ratio < MIN_FRESH_RATIO:
         sys.exit(f"❌ 只有 {ratio:.1%} 的股票抓到新資料（門檻 {MIN_FRESH_RATIO:.0%}），停止發布，網站維持前一版")
+
+
+    # 3b. 用官方每日收盤行情修正 Yahoo 資料
+    off = Official(http_get, log, get_prev("data/official.json"),
+                   os.path.join(MOCK_DIR, "") if MOCK_DIR else None, OFFICIAL_BUDGET)
+    listed_of = {s[0]: (s[4] if len(s) > 4 else "") for s in stocks}
+    names = {s[0]: s[1] for s in stocks}
+    repairs = []
+
+    # (1) Yahoo 整個市場都缺的平日：官方有資料 → 補進去
+    cal = build_calendar(data, last_date)
+    calset = set(cal)
+    probe = [d for d in weekdays(cal[0], last_date) if d not in calset]
+    added_days = []
+    for d in probe:
+        res = off.day(d)
+        if res is None or res == NO_DATA:
+            continue
+        n = 0
+        for code, rows in data.items():
+            o = res["tw"].get(code) or res["two"].get(code)
+            if o and insert_row(rows, d, o):
+                n += 1
+        if n:
+            added_days.append(d)
+            repairs.append({"kind": "補缺日", "date": d, "count": n})
+            log(f"  {d}：Yahoo 整個市場都缺這天，用官方資料補了 {n} 檔")
+    log(f"官方資料：檢查 {len(probe)} 個 Yahoo 缺的平日，補回 {len(added_days)} 個交易日"
+        f"（假日 {sum(1 for d in probe if d in off.holidays)} 天）")
+
+    # (2) 可疑漲跌的日子：和官方收盤比對，差超過 1% 就換成官方資料
+    cal = build_calendar(data, last_date)
+    cal_idx = {d: i for i, d in enumerate(cal)}
+    pre = []
+    for code, rows in data.items():
+        if len(rows) < 2:
+            continue
+        pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
+                           cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
+    by_date = {}
+    for x in pre:
+        by_date.setdefault(x["date"], []).append(x["code"])
+        i = next(k for k, r in enumerate(data[x["code"]]) if r[0] == x["date"])
+        if i > 0:   # 前一天也可能是錯的那一天（例如前一天被記成 100 倍）
+            by_date.setdefault(data[x["code"]][i - 1][0], []).append(x["code"])
+    fixed = 0
+    for d in sorted(by_date, reverse=True):   # 最近的先處理
+        res = off.day(d, set(by_date[d]))
+        if res is None or res == NO_DATA:
+            continue
+        for code in set(by_date[d]):
+            o = res["tw"].get(code) or res["two"].get(code)
+            rows = data[code]
+            i = next((k for k, r in enumerate(rows) if r[0] == d), None)
+            if not o or i is None:
+                continue
+            yc = rows[i][4]
+            if abs(yc / o[3] - 1) > 0.01:
+                f = rows[i][5] / rows[i][4]
+                rows[i] = (d, o[0], o[1], o[2], o[3], o[3] * pick_factor(rows, i, f), o[4])
+                repairs.append({"kind": "修正價格", "date": d, "code": code, "name": names.get(code, ""),
+                                "yahoo": round(yc, 2), "official": o[3]})
+                fixed += 1
+        off.keep_only(d, set(by_date[d]) if d not in added_days else None)
+    pending = [d for d in by_date if d not in off.days and d not in off.holidays]
+    log(f"官方資料：可疑漲跌 {len(pre)} 筆、{len(by_date)} 個日子，修正價格 {fixed} 筆；"
+        f"本次新抓 {off.fetched} 天，抓失敗 {len(off.failed)} 天，時間不夠留到下次 {len(pending)} 天")
+
+    # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
+    cal = build_calendar(data, last_date)
+    cal_idx = {d: i for i, d in enumerate(cal)}
+    bench_dates = {r[0] for r in bench}
+    bench_missing = [d for d in cal if d not in bench_dates and d >= sig_start_s]
+    if bench_missing:
+        log(f"0050 在 Yahoo 缺少 {len(bench_missing)} 個交易日：{', '.join(bench_missing[:20])}")
+    log(f"交易日曆 {len(cal)} 天（{cal[0]} ~ {cal[-1]}）")
 
     # 4. 計算
     bench_adj = {r[0]: r[5] for r in bench}
@@ -482,6 +581,10 @@ def main():
                 gaps.append({"code": code, "name": name, "days": len(miss), "from": miss[0], "to": miss[-1]})
 
     rows_out.sort(key=lambda r: (r[0], stock_list[r[1]][0]))
+    for x in flags:   # 剩下的可疑漲跌：標註官方資料的比對結果
+        v = off.days.get(x["date"])
+        o = (v["tw"].get(x["code"]) or v["two"].get(x["code"])) if v else None
+        x["off"] = "same" if o else ("none" if v else "")
 
     # 可疑漲跌的成因分析（寫在執行紀錄裡）
     if flags:
@@ -555,9 +658,13 @@ def main():
         "stale": stale, "gaps": sorted(gaps, key=lambda x: -x["days"])[:200],
         "gaps_total": len(gaps),
         "bench_missing": bench_missing,
+        "repairs": repairs,
+        "official": {"fetched": off.fetched, "failed": off.failed, "pending": pending},
     }
     with open(os.path.join(OUT, "data", "check.json"), "w", encoding="utf-8") as fh:
         json.dump(check, fh, ensure_ascii=False, indent=1)
+    with open(os.path.join(OUT, "data", "official.json"), "w", encoding="utf-8") as fh:
+        json.dump(off.cache(px_start.isoformat()), fh, separators=(",", ":"))
     with open(os.path.join(OUT, ".nojekyll"), "w") as fh:
         fh.write("")
 

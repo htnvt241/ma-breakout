@@ -14,7 +14,7 @@
 
   let META, STOCKS, SIGS, BENCH = null;
   let view = [];          // 篩選＋排序後的訊號
-  let sel = 0, page = 0;
+  let sel = 0, page = 0, tableH = 0;
   let sortKey = 'd', sortDir = -1;
   const pxCache = new Map();
   let chart, curPx = null, curSig = null;
@@ -140,7 +140,7 @@
     renderStats();
     renderHead();
     renderBody();
-    select(sel, true);
+    select(sel);
   }
 
   function typeLabel() {
@@ -215,13 +215,17 @@
       return `<tr data-i="${i}" class="${i === sel ? 'sel' : ''}">` +
         COLS.map(c => `<td class="${c.l ? 'l' : ''} ${c.cls || ''}">${c.f(s)}</td>`).join('') + '</tr>';
     }).join('') : `<tr><td colspan="${COLS.length}" class="l muted" style="padding:20px">沒有符合條件的訊號</td></tr>`;
+    // 換頁時表格高度不變（最後一頁筆數較少也一樣），畫面才不會跳
+    const wrap = document.querySelector('.table-wrap');
+    if (rows.length === PAGE) tableH = Math.max(tableH, wrap.offsetHeight);
+    wrap.style.minHeight = pages > 1 && tableH ? tableH + 'px' : '';
     $('pgText').textContent = `第 ${page + 1} / ${pages} 頁`;
     $('pgPrev').disabled = page <= 0;
     $('pgNext').disabled = page >= pages - 1;
   }
 
   // ---------- 選取與 K 線圖
-  function select(i, noScroll) {
+  function select(i) {
     if (!view.length) {
       $('chartCard').classList.add('hidden');
       return;
@@ -231,13 +235,7 @@
     if (p !== page) { page = p; renderBody(); }
     document.querySelectorAll('#tbody tr.sel').forEach(tr => tr.classList.remove('sel'));
     const tr = document.querySelector(`#tbody tr[data-i="${sel}"]`);
-    if (tr) {
-      tr.classList.add('sel');
-      if (!noScroll) {
-        const r = tr.getBoundingClientRect();
-        if (r.top < 0 || r.bottom > innerHeight) tr.scrollIntoView({ block: 'nearest' });
-      }
-    }
+    if (tr) tr.classList.add('sel');   // 只標示，不捲動畫面
     $('navPos').textContent = `訊號清單 ${sel + 1} / ${view.length}`;
     $('prevBtn').disabled = sel <= 0;
     $('nextBtn').disabled = sel >= view.length - 1;
@@ -336,7 +334,7 @@
     });
     $('tbody').addEventListener('click', e => {
       const tr = e.target.closest('tr[data-i]');
-      if (tr) select(+tr.dataset.i, true);
+      if (tr) select(+tr.dataset.i);
     });
     $('prevBtn').onclick = () => select(sel - 1);
     $('nextBtn').onclick = () => select(sel + 1);
@@ -370,11 +368,20 @@
     h += `<p><b>單日漲跌超過 ±10.5%（台股漲跌幅上限 10%，可能是資料錯誤）：${big.length} 筆</b>` +
       `<br><span>和前一筆資料之間缺了交易日時，上限按天數放寬（缺 1 天約 ±21%）；已排除新上市前 5 天、停牌 3 天以上恢復交易後的前 5 天（這些日子沒有漲跌幅限制）。</span></p>`;
     if (big.length) {
-      h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>漲跌</th></tr>' +
-        big.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td></tr>`).join('') +
+      h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>漲跌</th><th>官方比對</th></tr>' +
+        big.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td><td class="muted">${x.off === 'same' ? '官方資料也是這個價格' : x.off === 'none' ? '官方當天沒有這檔的成交' : '尚未和官方比對'}</td></tr>`).join('') +
         '</table>';
       if (big.length > 100) h += `<p>（只列最近 100 筆）</p>`;
     }
+    if (c.repairs && c.repairs.length) {
+      const days = c.repairs.filter(x => x.kind === '補缺日'), fix = c.repairs.filter(x => x.kind === '修正價格');
+      h += `<p><b>用官方資料（證交所、櫃買中心每日收盤行情）修正：</b>補回 Yahoo 整個市場都缺的交易日 ${days.length} 天` +
+        (days.length ? `（${days.map(x => `${x.date} ${x.count} 檔`).join('、')}）` : '') + `；修正價格 ${fix.length} 筆。</p>`;
+      if (fix.length) h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>Yahoo 收盤</th><th>官方收盤</th></tr>' +
+        fix.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td>${x.yahoo}</td><td>${x.official}</td></tr>`).join('') + '</table>';
+    }
+    if (c.official && c.official.pending && c.official.pending.length)
+      h += `<p>還有 ${c.official.pending.length} 個日子的官方資料這次沒抓完，下次更新會繼續。</p>`;
     if (c.bench_missing && c.bench_missing.length) h += `<p>0050（大盤對照）在 Yahoo 缺少的交易日：${c.bench_missing.join('、')}（這幾天開始或結束的訊號，同期 0050 欄位會空白）</p>`;
     h += `<p>最新交易日沒有成交資料（可能停牌）：${c.stale.length} 檔${c.stale.length ? '（' + c.stale.slice(0, 40).map(x => `${x.code} ${esc(x.name)}`).join('、') + '）' : ''}</p>`;
     h += `<p>期間內有缺少交易日的股票（多半是停牌）：${c.gaps_total} 檔${c.gaps.length ? '，缺最多的：' + c.gaps.slice(0, 15).map(x => `${x.code} ${esc(x.name)} ${x.days} 天`).join('、') : ''}</p>`;

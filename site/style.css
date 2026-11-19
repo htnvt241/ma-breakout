@@ -1,14 +1,14 @@
 :root {
   --bg: #0b0d10; --panel: #12151a; --panel2: #171b21; --border: #262b33; --grid: #1c2027;
   --text: #e7e9ec; --muted: #8b929c; --cross: #c9ced6; --accent: #4a8df0;
-  --up: #f0504c; --down: #2cb36b;
+  --up: #f0504c; --down: #2cb36b; --signal: #ffe100;
   --ma5: #b38cff; --ma10: #f2a93b; --ma20: #ff6fa3; --ma60: #4cc76b; --ma120: #6f7dff;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 }
 [data-theme="light"] {
   --bg: #f6f7f9; --panel: #ffffff; --panel2: #f1f3f6; --border: #dde1e7; --grid: #eef0f3;
   --text: #1d2228; --muted: #6b7380; --cross: #3a4048; --accent: #2f6fdb;
-  --up: #e0302b; --down: #13995a;
+  --up: #e0302b; --down: #13995a; --signal: #e0a800;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
@@ -19,6 +19,7 @@ body { margin: 0; background: var(--bg); color: var(--text);
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); }
 .accent { color: var(--accent); }
+.sigc { color: var(--signal); }
 .up { color: var(--up); } .down { color: var(--down); }
 hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
 h1 { font-size: 28px; margin: 4px 0 12px; letter-spacing: 1px; }
@@ -54,7 +55,7 @@ input[type=number] { width: 64px; }
 .chart-head .title { display: flex; justify-content: space-between; align-items: baseline; }
 .chart-head .title b { font-size: 19px; }
 .chart-head .title span { font-size: 12px; }
-.facts { font-size: 12.5px; margin: 6px 0 8px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.facts { min-height: 22px; font-size: 12.5px; margin: 6px 0 8px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .facts b { font-weight: 600; }
 .legend { font-size: 12px; min-height: 18px; display: flex; flex-wrap: wrap; gap: 0 12px; }
 .chart { height: 460px; background: var(--panel); border: 1px solid var(--border); border-top: 0; border-bottom: 0; position: relative; }

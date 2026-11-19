@@ -125,7 +125,7 @@
       const s = getComputedStyle(this.el);
       const g = k => s.getPropertyValue(k).trim();
       return { up: g('--up'), down: g('--down'), grid: g('--grid'), text: g('--muted'),
-        bg: g('--panel'), cross: g('--cross'), accent: g('--accent'), other: g('--muted') };
+        bg: g('--panel'), cross: g('--cross'), accent: g('--accent'), signal: g('--signal') };
     }
 
     draw() {
@@ -256,17 +256,17 @@
         }
       }
 
-      // 其他訊號日（灰色小三角）
-      ctx.fillStyle = C.other;
+      // 其他訊號日（亮黃色小三角）
+      ctx.fillStyle = C.signal;
       for (const i of this.otherIdx) {
         if (i < lo || i > hi || i === this.sigIdx) continue;
         const xx = this.x(i), yy = y(this.bars[i].l) + 6;
         ctx.beginPath(); ctx.moveTo(xx, yy); ctx.lineTo(xx - 4, yy + 7); ctx.lineTo(xx + 4, yy + 7); ctx.fill();
       }
-      // 選取的訊號日（藍色箭頭）
+      // 選取的訊號日（亮黃色箭頭）
       if (this.sigIdx != null && this.sigIdx >= lo && this.sigIdx <= hi) {
         const xx = this.x(this.sigIdx), yy = y(this.bars[this.sigIdx].l) + 6;
-        ctx.fillStyle = C.accent;
+        ctx.fillStyle = C.signal;
         ctx.beginPath(); ctx.moveTo(xx, yy); ctx.lineTo(xx - 7, yy + 10); ctx.lineTo(xx - 2.5, yy + 10);
         ctx.lineTo(xx - 2.5, yy + 18); ctx.lineTo(xx + 2.5, yy + 18); ctx.lineTo(xx + 2.5, yy + 10);
         ctx.lineTo(xx + 7, yy + 10); ctx.closePath(); ctx.fill();
