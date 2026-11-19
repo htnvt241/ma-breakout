@@ -41,6 +41,8 @@ def _parse_table(fields, rows, names):
         return None
     ic, io, ih, il, icl, iv = (col(*names["code"]), col("開盤"), col("最高"), col("最低"),
                                col("收盤"), col("成交股數"))
+    isign, idiff = col("漲跌(+/-)"), col("漲跌價差")   # 證交所：正負號、價差分兩欄
+    ichg = col("漲跌") if isign is None else None       # 櫃買：一欄，含正負號
     if None in (ic, io, ih, il, icl, iv):
         return None
     out = {}
@@ -51,7 +53,17 @@ def _parse_table(fields, rows, names):
         o, h, l, c, v = (_num(r[io]), _num(r[ih]), _num(r[il]), _num(r[icl]), _num(r[iv]))
         if None in (o, h, l, c) or not v or c <= 0:
             continue   # 沒有成交
-        out[code] = [o, h, l, c, v]
+        chg = None   # 和「參考價」（前一天收盤，除權息日為除權息參考價）相比的漲跌
+        if isign is not None and idiff is not None:
+            sign = re.sub(r"<[^>]+>", "", str(r[isign])).strip()
+            diff = _num(r[idiff])
+            if diff is not None and sign in ("+", "-", ""):
+                chg = -diff if sign == "-" else diff
+                if sign == "" and diff != 0:
+                    chg = None
+        elif ichg is not None:
+            chg = _num(r[ichg])
+        out[code] = [o, h, l, c, v, chg]
     return out
 
 
@@ -89,7 +101,7 @@ def parse_tpex(js):
                     return res if res else NO_DATA
         return NO_DATA
     if "aaData" in js:   # 舊版網址格式
-        fields = ["代號", "名稱", "收盤", "漲跌", "開盤", "最高", "最低", "均價", "成交股數"]
+        fields = ["代號", "名稱", "收盤", "漲跌", "開盤", "最高", "最低", "均價", "成交股數"]  # noqa
         res = _parse_table(fields, [r[:9] for r in js["aaData"]], {"code": ("代號",)})
         return res if res else NO_DATA
     stat = str(js.get("stat", ""))
@@ -98,12 +110,23 @@ def parse_tpex(js):
     raise RuntimeError(f"櫃買中心：{stat[:60] or list(js)[:5]}")
 
 
+CACHE_VERSION = 2   # 快取格式改了就加 1（舊快取的日子會重抓，假日清單保留）
+
+
+def official_ret(o):
+    """官方當天漲跌幅：收盤 ÷ 參考價。無法比較（除權息不比價、新上市等）回傳 None。"""
+    if not o or len(o) < 6 or o[5] is None:
+        return None
+    ref = o[3] - o[5]
+    return o[3] / ref if ref > 0 else None
+
+
 class Official:
     def __init__(self, http_get, log, cache=None, mock_dir=None, budget=20 * 60):
         self.http_get, self.log, self.mock = http_get, log, mock_dir
         cache = cache or {}
         self.holidays = set(cache.get("holidays", []))
-        self.days = cache.get("days", {})          # {date: {"tw": {...}, "two": {...}}}
+        self.days = cache.get("days", {}) if cache.get("v") == CACHE_VERSION else {}
         self.budget, self.t0 = budget, time.time()
         self.fetched, self.failed = 0, []
         self._last = {"tw": 0.0, "two": 0.0}
@@ -140,24 +163,38 @@ class Official:
     def out_of_time(self):
         return time.time() - self.t0 > self.budget
 
-    def day(self, d, need=None):
-        """回傳 {"tw": {...}, "two": {...}}、NO_DATA（假日），或 None（這次抓不到／時間不夠）。
-        need＝這次需要的股票代號；存檔時只留部分股票的日子，缺了需要的股票就重抓。"""
+    def cached(self, d, need=None):
         if d in self.holidays:
             return NO_DATA
         v = self.days.get(d)
-        if v is not None and not (v.get("partial") and need and not set(need) <= set(v.get("keep", []))):
+        if v is None:
+            return None
+        if v.get("partial") and need and not set(need) <= set(v.get("keep", [])):
+            return None
+        return v
+
+    def day(self, d, need=None, probe=False):
+        """回傳 {"tw": {...}, "two": {...}}、NO_DATA（假日），或 None（這次抓不到／時間不夠）。
+        need＝這次需要的股票代號；probe＝不確定是不是交易日（先查證交所，沒資料就是假日）。"""
+        v = self.cached(d, need)
+        if v is not None:
             return v
         if self.out_of_time():
             return None
         try:
-            tw = self._get("tw", d)
-            if tw == NO_DATA:
-                self.holidays.add(d)
-                self.fetched += 1
-                return NO_DATA
-            two = self._get("two", d)
-            res = {"tw": tw, "two": {} if two == NO_DATA else two}
+            if probe:
+                tw = self._get("tw", d)
+                if tw == NO_DATA:
+                    self.holidays.add(d)
+                    self.fetched += 1
+                    return NO_DATA
+                two = self._get("two", d)
+            else:   # 確定是交易日：上市、上櫃同時抓（不同網站）
+                import concurrent.futures as cf
+                with cf.ThreadPoolExecutor(2) as ex:
+                    ftw, ftwo = ex.submit(self._get, "tw", d), ex.submit(self._get, "two", d)
+                    tw, two = ftw.result(), ftwo.result()
+            res = {"tw": {} if tw == NO_DATA else tw, "two": {} if two == NO_DATA else two, "partial": False}
             self.days[d] = res
             self.fetched += 1
             return res
@@ -167,19 +204,21 @@ class Official:
             return None
 
     def keep_only(self, d, codes):
-        """只是為了比對個別股票才抓的日子，存檔時只留那幾檔，檔案比較小。codes=None 表示整天都留。"""
+        """只是為了比對個別股票才抓的日子，存檔時只留那幾檔，檔案比較小。"""
         v = self.days.get(d)
-        if not v or codes is None or v.get("partial") is False:
-            if v is not None and codes is None:
-                v["partial"] = False
+        if not v or v.get("full"):
             return
-        v["partial"] = True
+        keep = set(v.get("keep", [])) | set(codes) if v.get("partial") else set(codes)
         for mk in ("tw", "two"):
-            v[mk] = {c: x for c, x in v[mk].items() if c in codes or c in v.get("keep", [])}
-        v["keep"] = sorted(set(v.get("keep", [])) | set(codes))
+            v[mk] = {c: x for c, x in v[mk].items() if c in keep}
+        v["partial"], v["keep"] = True, sorted(keep)
+
+    def mark_full(self, d):
+        if d in self.days:
+            self.days[d]["full"] = True
 
     def cache(self, keep_from):
-        return {"holidays": sorted(h for h in self.holidays if h >= keep_from),
+        return {"v": CACHE_VERSION, "holidays": sorted(h for h in self.holidays if h >= keep_from),
                 "days": {d: v for d, v in sorted(self.days.items()) if d >= keep_from}}
 
 

@@ -369,7 +369,7 @@
       `<br><span>和前一筆資料之間缺了交易日時，上限按天數放寬（缺 1 天約 ±21%）；已排除新上市前 5 天、停牌 3 天以上恢復交易後的前 5 天（這些日子沒有漲跌幅限制）。</span></p>`;
     if (big.length) {
       h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>漲跌</th><th>官方比對</th></tr>' +
-        big.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td><td class="muted">${x.off === 'same' ? '官方資料也是這個價格' : x.off === 'none' ? '官方當天沒有這檔的成交' : '尚未和官方比對'}</td></tr>`).join('') +
+        big.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td><td class="muted">${{same: '官方漲跌相同（可能是沒有漲跌幅限制的日子）', diff: '和官方不同，但前一筆不是前一個交易日，無法自動修正', none: '官方當天沒有這檔的成交', noref: '官方當天不比價（除權息等）'}[x.off] || '尚未和官方比對'}</td></tr>`).join('') +
         '</table>';
       if (big.length > 100) h += `<p>（只列最近 100 筆）</p>`;
     }
@@ -377,8 +377,8 @@
       const days = c.repairs.filter(x => x.kind === '補缺日'), fix = c.repairs.filter(x => x.kind === '修正價格');
       h += `<p><b>用官方資料（證交所、櫃買中心每日收盤行情）修正：</b>補回 Yahoo 整個市場都缺的交易日 ${days.length} 天` +
         (days.length ? `（${days.map(x => `${x.date} ${x.count} 檔`).join('、')}）` : '') + `；修正價格 ${fix.length} 筆。</p>`;
-      if (fix.length) h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>Yahoo 收盤</th><th>官方收盤</th></tr>' +
-        fix.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td>${x.yahoo}</td><td>${x.official}</td></tr>`).join('') + '</table>';
+      if (fix.length) h += '<table><tr><th>日期</th><th>代號</th><th>公司</th><th>Yahoo 當日漲跌</th><th>官方當日漲跌</th></tr>' +
+        fix.slice(0, 100).map(x => `<tr><td>${x.date}</td><td>${x.code}</td><td>${esc(x.name)}</td><td>${pct(x.yahoo)}</td><td>${pct(x.official)}</td></tr>`).join('') + '</table>';
     }
     if (c.official && c.official.pending && c.official.pending.length)
       h += `<p>還有 ${c.official.pending.length} 個日子的官方資料這次沒抓完，下次更新會繼續。</p>`;

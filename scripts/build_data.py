@@ -34,7 +34,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import signals as S  # noqa: E402
-from official import NO_DATA, Official, weekdays  # noqa: E402
+from official import NO_DATA, Official, official_ret, weekdays  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE_SRC = os.path.join(ROOT, "site")
@@ -351,17 +351,29 @@ def pick_factor(rows, i, own):
     return nxt or prev
 
 
+def scaled_row(prev, d, o, r):
+    """用官方當天漲跌幅 r（收盤÷參考價）接在 Yahoo 前一筆 prev 後面，換算成 Yahoo 的價格尺度。"""
+    f = prev[5] / prev[4]                 # 還原係數（還原價÷Yahoo 收盤）
+    adj = prev[5] * r
+    raw = adj / f
+    k = raw / o[3]                        # 官方價格 → Yahoo 尺度
+    vol = o[3] * o[4] / raw               # 讓「成交額＝收盤×量」和官方一致
+    return (d, o[0] * k, o[1] * k, o[2] * k, raw, adj, vol)
+
+
 def insert_row(rows, d, o):
-    """把官方資料 o=[開,高,低,收,量] 插進 rows（依日期排序）；已經有這天就不動。"""
+    """把官方資料 o=[開,高,低,收,量,漲跌] 插進 rows（依日期排序）；已經有這天就不動。"""
     import bisect
     ds = [r[0] for r in rows]
     i = bisect.bisect_left(ds, d)
     if i < len(rows) and rows[i][0] == d:
         return False
-    if i == 0 or i == len(rows):   # 不在這檔股票的資料期間內（還沒上市、或已經是最後一天之後）
+    if i == 0 or i == len(rows):   # 不在這檔股票的資料期間內
         return False
-    f = rows[i][5] / rows[i][4]     # 用後一天的還原係數
-    rows.insert(i, (d, o[0], o[1], o[2], o[3], o[3] * f, o[4]))
+    r = official_ret(o)
+    if r is None:                  # 這天無法比較漲跌（除權息不比價等），不補
+        return False
+    rows.insert(i, scaled_row(rows[i - 1], d, o, r))
     return True
 
 
@@ -446,6 +458,8 @@ def main():
 
 
     # 3b. 用官方每日收盤行情修正 Yahoo 資料
+    # 注意：Yahoo 的價格已經依之後的分割、減資、配股調整過，和官方「當時的實際價格」尺度不同，
+    # 所以一律比「漲跌幅」：官方當天漲跌幅＝收盤 ÷ 參考價，套在 Yahoo 前一筆的價格上。
     off = Official(http_get, log, get_prev("data/official.json"),
                    os.path.join(MOCK_DIR, "") if MOCK_DIR else None, OFFICIAL_BUDGET)
     listed_of = {s[0]: (s[4] if len(s) > 4 else "") for s in stocks}
@@ -458,9 +472,10 @@ def main():
     probe = [d for d in weekdays(cal[0], last_date) if d not in calset]
     added_days = []
     for d in probe:
-        res = off.day(d)
+        res = off.day(d, probe=True)
         if res is None or res == NO_DATA:
             continue
+        off.mark_full(d)
         n = 0
         for code, rows in data.items():
             o = res["tw"].get(code) or res["two"].get(code)
@@ -473,42 +488,45 @@ def main():
     log(f"官方資料：檢查 {len(probe)} 個 Yahoo 缺的平日，補回 {len(added_days)} 個交易日"
         f"（假日 {sum(1 for d in probe if d in off.holidays)} 天）")
 
-    # (2) 可疑漲跌的日子：和官方收盤比對，差超過 1% 就換成官方資料
+    # (2) 可疑漲跌：先把需要的官方日子抓下來（最近的優先），再「依日期由舊到新」逐檔比對修正
     cal = build_calendar(data, last_date)
     cal_idx = {d: i for i, d in enumerate(cal)}
     pre = []
     for code, rows in data.items():
-        if len(rows) < 2:
-            continue
-        pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
-                           cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
-    by_date = {}
+        if len(rows) >= 2:
+            pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
+                               cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
+    need = {}
     for x in pre:
-        by_date.setdefault(x["date"], []).append(x["code"])
-        i = next(k for k, r in enumerate(data[x["code"]]) if r[0] == x["date"])
-        if i > 0:   # 前一天也可能是錯的那一天（例如前一天被記成 100 倍）
-            by_date.setdefault(data[x["code"]][i - 1][0], []).append(x["code"])
+        need.setdefault(x["date"], set()).add(x["code"])
+    for d in sorted(need, reverse=True):
+        off.day(d, need[d])
     fixed = 0
-    for d in sorted(by_date, reverse=True):   # 最近的先處理
-        res = off.day(d, set(by_date[d]))
-        if res is None or res == NO_DATA:
-            continue
-        for code in set(by_date[d]):
-            o = res["tw"].get(code) or res["two"].get(code)
-            rows = data[code]
-            i = next((k for k, r in enumerate(rows) if r[0] == d), None)
-            if not o or i is None:
+    per_stock = {}
+    for x in pre:
+        per_stock.setdefault(x["code"], []).append(x["date"])
+    for code, ds in per_stock.items():
+        rows = data[code]
+        for d in sorted(ds):
+            v = off.cached(d, {code})
+            o = (v["tw"].get(code) or v["two"].get(code)) if v and v != NO_DATA else None
+            r = official_ret(o)
+            i = next((k for k, row in enumerate(rows) if row[0] == d), None)
+            if r is None or i is None or i == 0:
                 continue
-            yc = rows[i][4]
-            if abs(yc / o[3] - 1) > 0.01:
-                f = rows[i][5] / rows[i][4]
-                rows[i] = (d, o[0], o[1], o[2], o[3], o[3] * pick_factor(rows, i, f), o[4])
+            p0 = cal_idx.get(rows[i - 1][0])
+            if p0 is None or cal_idx.get(d) != p0 + 1:
+                continue   # Yahoo 前一筆不是前一個交易日，無法確定，不動
+            y_ret = rows[i][5] / rows[i - 1][5]
+            if abs(y_ret / r - 1) > 0.01:
+                rows[i] = scaled_row(rows[i - 1], d, o, r)
                 repairs.append({"kind": "修正價格", "date": d, "code": code, "name": names.get(code, ""),
-                                "yahoo": round(yc, 2), "official": o[3]})
+                                "yahoo": round(y_ret - 1, 4), "official": round(r - 1, 4)})
                 fixed += 1
-        off.keep_only(d, set(by_date[d]) if d not in added_days else None)
-    pending = [d for d in by_date if d not in off.days and d not in off.holidays]
-    log(f"官方資料：可疑漲跌 {len(pre)} 筆、{len(by_date)} 個日子，修正價格 {fixed} 筆；"
+    for d, codes in need.items():
+        off.keep_only(d, codes)
+    pending = sorted(d for d in need if off.cached(d, need[d]) is None)
+    log(f"官方資料：可疑漲跌 {len(pre)} 筆、{len(need)} 個日子，修正 {fixed} 筆；"
         f"本次新抓 {off.fetched} 天，抓失敗 {len(off.failed)} 天，時間不夠留到下次 {len(pending)} 天")
 
     # 交易日曆：超過三成股票有成交的日子才算交易日（只看 0050 一檔，遇到 Yahoo 漏資料就會錯）
@@ -582,9 +600,11 @@ def main():
 
     rows_out.sort(key=lambda r: (r[0], stock_list[r[1]][0]))
     for x in flags:   # 剩下的可疑漲跌：標註官方資料的比對結果
-        v = off.days.get(x["date"])
-        o = (v["tw"].get(x["code"]) or v["two"].get(x["code"])) if v else None
-        x["off"] = "same" if o else ("none" if v else "")
+        v = off.cached(x["date"], {x["code"]})
+        o = (v["tw"].get(x["code"]) or v["two"].get(x["code"])) if v and v != NO_DATA else None
+        r = official_ret(o)
+        x["off"] = ("" if v is None else "none" if not o else "noref" if r is None
+                    else "same" if abs((1 + x["ret"]) / r - 1) <= 0.01 else "diff")
 
     # 可疑漲跌的成因分析（寫在執行紀錄裡）
     if flags:
