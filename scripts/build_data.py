@@ -166,7 +166,8 @@ def parse_isin(text, market):
             ind = ind[:-2]
         elif ind.endswith("業") and len(ind) > 2:     # 半導體業 → 半導體
             ind = ind[:-1]
-        out.append([m.group(1), m.group(2).strip(), market, ind])
+        listed = row[2].strip().replace("/", "-") if re.match(r"^\d{4}/\d{2}/\d{2}$", row[2].strip()) else ""
+        out.append([m.group(1), m.group(2).strip(), market, ind, listed])
     return out
 
 
@@ -248,7 +249,7 @@ def fetch_yahoo(symbol, px_start):
 
 
 def fetch_one(stock, px_start):
-    code, _, market, _ = stock
+    code, market = stock[0], stock[2]
     suffixes = (".TW", ".TWO") if market == 0 else (".TWO", ".TW")
     for suf in suffixes:   # 轉上市／轉上櫃的股票，代號後綴可能還沒更新
         rows = fetch_yahoo(code + suf, px_start)
@@ -294,17 +295,19 @@ def prev_px_to_rows(js):
 
 
 # ---------------------------------------------------------------- 資料檢查
-def check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first):
+def check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first, listed=""):
     """回傳這檔股票的檢查結果（list of dict）。"""
     flags = []
     pos = [cal_idx.get(d) for d in dates]
+    # 上市櫃日之前（Yahoo 會附上興櫃時期的交易，興櫃沒有漲跌幅限制）＋上市櫃後前 5 天不檢查
+    first_listed = next((k for k, d in enumerate(dates) if d >= listed), len(dates)) if listed else 0
     for t in range(1, len(dates)):
         if pos[t] is None or pos[t - 1] is None:
             continue
         gap = pos[t] - pos[t - 1]
         # 新上市（資料第一天晚於抓取起點）前 5 天、停牌 3 天以上恢復交易的前 5 天，沒有漲跌幅限制
         listed_new = dates[0] > fetch_first
-        if (listed_new and t < 5):
+        if (listed_new and t < 5) or t < first_listed + 5 and listed and dates[0] < listed:
             continue
         recent_resume = any(pos[j] is None or pos[j - 1] is None or (pos[j] - pos[j - 1]) >= 3
                             for j in range(max(1, t - 4), t + 1))
@@ -345,7 +348,8 @@ def main():
     prev_list = get_prev("data/stocks.json")
     today_s = today.isoformat()
     try:
-        if prev_list and prev_list.get("list_date") == today_s and not MOCK_DIR:
+        cached = (prev_list or {}).get("all") or []
+        if prev_list and prev_list.get("list_date") == today_s and cached and len(cached[0]) >= 5 and not MOCK_DIR:
             stocks = prev_list.get("all") or prev_list["list"]
             list_date = today_s
             log(f"股票清單：沿用今天稍早抓的 {len(stocks)} 檔")
@@ -428,12 +432,13 @@ def main():
     stale, gaps = [], []
     fetch_first = cal[0]
     for s in stocks:
-        code, name, market, ind = s
+        code, name, market, ind = s[:4]
+        listed = s[4] if len(s) > 4 else ""
         rows = data.get(code)
         if not rows or len(rows) < 2:
             continue
         idx = len(stock_list)
-        stock_list.append([code, name, market, ind])
+        stock_list.append([code, name, market, ind, listed])
         dates = [r[0] for r in rows]
         raw_c = np.array([r[4] for r in rows])
         adj = np.array([r[5] for r in rows])
@@ -443,7 +448,7 @@ def main():
 
         for t in np.nonzero(res["sig"])[0]:
             d = dates[t]
-            if d < sig_start_s:
+            if d < sig_start_s or d < listed:   # 還沒上市櫃（興櫃時期）不算訊號
                 continue
             fw = S.forward_stats(adj, t)
             b = {}
@@ -465,7 +470,7 @@ def main():
             json.dump(encode_px(rows, adj, f), fh, separators=(",", ":"))
 
         # 資料檢查
-        flags += check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first)
+        flags += check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first, listed)
         if dates[-1] < last_date and code not in reused:
             stale.append({"code": code, "name": name, "last": dates[-1]})
         first_pos = cal_idx.get(dates[0])
@@ -513,7 +518,7 @@ def main():
     with open(os.path.join(OUT, "data", "signals.json"), "w", encoding="utf-8") as fh:
         json.dump({"fields": fields, "rows": rows_out}, fh, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(OUT, "data", "stocks.json"), "w", encoding="utf-8") as fh:
-        json.dump({"fields": ["code", "name", "market", "industry"], "list": stock_list,
+        json.dump({"fields": ["code", "name", "market", "industry", "listed"], "list": stock_list,
                    "list_date": list_date, "all": stocks},
                   fh, ensure_ascii=False, separators=(",", ":"))
 
