@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交易模擬 — 均線發散突破</title>
+<link rel="stylesheet" href="style.css">
+<script>try { if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <nav class="tabs"><a href="./">訊號清單</a><a href="sim.html" class="on">交易模擬</a></nav>
+    <button id="theme" class="theme" title="切換日間／夜間"><span class="knob"></span><span id="themeLabel">夜間</span></button>
+  </header>
+  <h1>交易模擬</h1>
+  <p class="muted lead">用 2015 年起的歷史資料，模擬照策略實際買賣的結果，並和 0050（還原，含息）比較。
+    同時用兩種方法：<b>每日分批</b>（每個訊號都買到，檢驗策略本身）與<b>實戰模擬</b>（資金有限、最多持有 N 檔，用不同起始日和隨機順序重跑，看運氣成分有多大）。</p>
+
+  <section class="card simform">
+    <div class="grid">
+      <label>策略<select id="strategy">
+        <option value="s1">均線發散突破（首次訊號）</option>
+        <option value="lh80">長均線新高（80 日）</option>
+        <option value="lh100">長均線新高（100 日）</option>
+      </select></label>
+      <label>期間<span class="row"><input type="date" id="dFrom"> 至 <input type="date" id="dTo"></span></label>
+      <label>持有天數<select id="hold"></select></label>
+      <label>總資金（元）<input type="number" id="capital" value="1000000" min="10000" step="100000"></label>
+      <label>最多同時持有<span class="row"><input type="number" id="slots" value="10" min="1" max="100"> 檔 <small class="muted" id="perSlot"></small></span></label>
+      <label>資金方式<select id="money">
+        <option value="fixed">固定金額（每檔永遠是 總資金 ÷ 檔數）</option>
+        <option value="compound">隨資產複利（每檔 ＝ 當時總資產 ÷ 檔數）</option>
+      </select></label>
+      <label>手續費折扣<select id="fee">
+        <option value="1">不打折（0.1425%）</option>
+        <option value="0.6" selected>6 折</option>
+        <option value="0.5">5 折</option>
+        <option value="0.3">3 折</option>
+        <option value="0.28">2.8 折</option>
+      </select></label>
+      <label>排除成交金額太小的股票<select id="minAmt">
+        <option value="0">不限</option>
+        <option value="500">前 20 日平均 ≥ 500 萬</option>
+        <option value="1000" selected>前 20 日平均 ≥ 1,000 萬</option>
+        <option value="3000">前 20 日平均 ≥ 3,000 萬</option>
+        <option value="5000">前 20 日平均 ≥ 5,000 萬</option>
+        <option value="10000">前 20 日平均 ≥ 1 億</option>
+      </select></label>
+      <label>同一天訊號太多時，買哪幾檔<select id="order">
+        <option value="random">隨機（重跑 5 次，看運氣成分）</option>
+        <option value="amt">成交金額大的優先</option>
+      </select></label>
+    </div>
+    <label class="check"><input type="checkbox" id="limit" checked> 開盤漲停買不到、開盤跌停賣不掉
+      <span class="muted">（隔天開盤比前一天收盤漲 ≥ 9.5% 當作沒買到；該賣那天開盤跌 ≥ 9.5% 就延到下一個交易日再賣）</span></label>
+    <div class="actions"><button id="run" class="primary">開始模擬</button> <span id="status" class="muted">載入中…</span></div>
+    <p class="muted small">建議：成交金額門檻至少是「每檔投入金額」的 100 倍（你的單不超過當天成交的 1%，才不容易買不到或把價格買高）。</p>
+  </section>
+
+  <section id="results" class="hidden">
+    <p id="summaryNote" class="muted"></p>
+    <h2>結果總覽</h2>
+    <div class="table-wrap" id="summary"></div>
+    <p class="dist" id="dist"></p>
+
+    <h2>資產曲線 <label class="check inline"><input type="checkbox" id="logScale"> 對數刻度</label></h2>
+    <div class="card chartbox"><div id="eqChart" class="lc"></div></div>
+    <h2>回撤（離前高跌了多少）</h2>
+    <div class="card chartbox"><div id="ddChart" class="lc small"></div></div>
+
+    <div class="cols">
+      <div><h2>逐年報酬</h2><div class="table-wrap" id="yearly"></div></div>
+      <div>
+        <h2>前後兩半比較</h2><div class="table-wrap" id="halves"></div>
+        <p class="muted small">前後兩段都跑贏 0050，比只有某一段特別好更可信。</p>
+        <h2>拿掉最賺的交易</h2><div class="table-wrap" id="removeTop"></div>
+        <p class="muted small">這類策略常靠少數大漲股撐起報酬。拿掉最賺的 1%、5% 交易後還能跑贏 0050，代表不是只靠幾支飆股。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="notes muted">
+    <p><b>交易規則</b>：訊號日收盤確認，隔天開盤買進；買進當天算第 1 天，抱滿設定的交易日數後，再隔一個交易日開盤賣出（例如持有 20 天＝買進後第 21 個交易日開盤賣，和參考筆記相同）。價格一律用還原價，報酬已含股利。手續費買賣各收一次，賣出另收證交稅 0.3%。已經持有的股票再出訊號不重複買。</p>
+    <p><b>每日分批</b>：學術研究常用的做法。總資金分成「持有天數＋1」份，每天輪到的那一份平均買進當天<b>所有</b>符合條件的訊號；當天沒有訊號，那份就放現金。每個訊號都會買到，沒有「從哪天開始」或「買哪幾檔」的運氣問題，適合檢驗策略本身有沒有效。</p>
+    <p><b>實戰模擬</b>：最多同時持有 N 檔，位子滿了就不再買，賣掉才空出位子（不會額外投入資金）。每檔金額固定為「總資金 ÷ N」（或選複利）；現金不足半份就不買。因為結果會受「從哪天開始」和「同一天買哪幾檔」影響，所以自動用 20 個不同的起始日（連續 20 個交易日）各跑一次，選隨機時每個起始日再用 5 種隨機順序，共 100 次，列出最差、中位數、最好。</p>
+    <p><b>長均線新高</b>：MA50 &gt; MA100 &gt; MA200、收盤 &gt; MA50、收盤創 80（或 100）日新高（不含當天）；條件持續成立不重複出訊號，要連續 3 天不成立才會再次觸發。<b>均線發散突破</b>：本網站訊號清單的規則，只用「首次」訊號。兩者都排除上市櫃日之前（興櫃時期）的訊號。</p>
+    <p><b>限制</b>：股票池只含目前仍上市櫃的股票（期間內下市的不在內，報酬可能略為偏高）；沒有排除處置股；成交價假設都能以開盤價成交（大單可能有滑價）；零股也照比例計算。歷史回測不代表未來報酬，僅供研究討論，非投資建議。</p>
+  </section>
+</div>
+<script src="linechart.js"></script>
+<script src="sim.js"></script>
+</body>
+</html>

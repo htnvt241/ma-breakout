@@ -10,7 +10,7 @@ out = sys.argv[1]
 os.makedirs(os.path.join(out, "px"), exist_ok=True)
 rng = np.random.default_rng(7)
 end = date.fromisoformat(os.environ.get("MOCK_TODAY", "2026-11-19"))
-days, d = [], date(2020, 10, 1)
+days, d = [], date(2014, 1, 1)
 while d <= end:
     if d.weekday() < 5 and not (d.month == 2 and 8 <= d.day <= 14):
         days.append(d.isoformat())

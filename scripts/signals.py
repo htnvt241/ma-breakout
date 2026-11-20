@@ -88,3 +88,30 @@ def forward_stats(c, t):
     else:
         out["rn"] = out["hi"] = out["lo"] = None
     return out
+
+
+# ---------------------------------------------------------------- 長均線新高（交易模擬用的第二套策略）
+LH_REARM = 3   # 條件要連續 3 天不成立，才能再次觸發
+
+
+def compute_longhigh(close_adj, n_high):
+    """長均線新高：MA50 > MA100 > MA200、收盤 > MA50、收盤創 n_high 日新高（不含當天）。
+    觸發後條件持續成立不會重複出訊號；要連續 LH_REARM 天不成立才重新武裝。回傳每天是否出訊號。"""
+    c = np.asarray(close_adj, dtype=float)
+    m50, m100, m200 = (moving_average(c, n) for n in (50, 100, 200))
+    pmax = prior_max(c, n_high)
+    with np.errstate(invalid="ignore"):
+        cond = (m50 > m100) & (m100 > m200) & (c > m50) & (c > pmax)
+    sig = np.zeros(len(c), dtype=bool)
+    armed, off_streak = True, 0
+    for t in range(len(c)):
+        if cond[t]:
+            if armed:
+                sig[t] = True
+                armed = False
+            off_streak = 0
+        else:
+            off_streak += 1
+            if off_streak >= LH_REARM:
+                armed = True
+    return sig

@@ -34,6 +34,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import signals as S  # noqa: E402
+import sim_data as SIM  # noqa: E402
 from official import NO_DATA, Official, official_ret, weekdays  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,7 +43,9 @@ OUT = os.environ.get("OUT_DIR", os.path.join(ROOT, "_site"))
 PREV_URL = os.environ.get("SITE_URL", "https://htnvt241.github.io/ma-breakout/").rstrip("/") + "/"
 MOCK_DIR = os.environ.get("MOCK_DIR")
 
-START_FLOOR = date(2022, 1, 1)   # 訊號最早從這天起算
+START_FLOOR = date(2022, 1, 1)   # 訊號清單最早從這天起算
+SIM_START = "2015-01-01"         # 交易模擬從這天起（價格從 2014 年起抓，給 MA200 暖機）
+FETCH_FLOOR = date(2014, 1, 1)
 KEEP_MONTHS = 60                 # 只保留 5 年
 PX_BUFFER_MONTHS = 13            # 價格多留的暖機期間
 MIN_FRESH_RATIO = 0.90           # 至少 90% 股票要抓到新資料才發布
@@ -414,7 +417,8 @@ def main():
         today = date.fromisoformat(os.environ["MOCK_TODAY"])
     sig_start, px_start = window(today)
     sig_start_s = sig_start.isoformat()
-    log(f"訊號起算日 {sig_start}，價格起算日 {px_start}")
+    fetch_start = min(px_start, FETCH_FLOOR)
+    log(f"訊號清單起算日 {sig_start}，K 線圖起算日 {px_start}，交易模擬起算日 {SIM_START}（價格從 {fetch_start} 抓）")
 
     prev_meta = get_prev("data/meta.json")
     prev_check = get_prev("data/check.json") or {}
@@ -439,7 +443,7 @@ def main():
         list_date = prev_list.get("list_date", "")
 
     # 2. 大盤基準 0050
-    bench = fetch_yahoo(BENCH[1], px_start)
+    bench = fetch_yahoo(BENCH[1], fetch_start)
     if not bench or len(bench) < 200:
         sys.exit("❌ 0050（大盤對照）抓不到，停止發布")
 
@@ -448,7 +452,7 @@ def main():
     with cf.ThreadPoolExecutor(WORKERS) as ex:
         futs = {}
         for s in stocks:
-            futs[ex.submit(lambda st: None if time.time() - t0 > FETCH_TIME_BUDGET else fetch_one(st, px_start), s)] = s
+            futs[ex.submit(lambda st: None if time.time() - t0 > FETCH_TIME_BUDGET else fetch_one(st, fetch_start), s)] = s
         done = 0
         for fu in cf.as_completed(futs):
             s = futs[fu]
@@ -470,7 +474,7 @@ def main():
     for s in failed:
         js = get_prev(f"data/px/{s[0]}.json")
         if js:
-            data[s[0]] = [r for r in prev_px_to_rows(js) if r[0] >= px_start.isoformat()]
+            data[s[0]] = [r for r in prev_px_to_rows(js) if r[0] >= fetch_start.isoformat()]
             reused.append(s[0])
         else:
             nodata.append(s[0])
@@ -535,7 +539,7 @@ def main():
         for code, rows in data.items():
             if len(rows) >= 2:
                 pre += check_stock(code, names.get(code, ""), [r[0] for r in rows], [r[5] for r in rows],
-                                   cal_idx, sig_start_s, cal[0], listed_of.get(code, ""))
+                                   cal_idx, SIM_START, cal[0], listed_of.get(code, ""))
         todo = [x for x in pre if (x["code"], x["date"]) not in handled]
         if not todo:
             break
@@ -610,6 +614,7 @@ def main():
     os.makedirs(os.path.join(OUT, "data", "px"), exist_ok=True)
 
     stock_list, rows_out, flags = [], [], []
+    sim_recs = {"s1": [], "lh80": [], "lh100": []}
     stale, gaps = [], []
     fetch_first = cal[0]
     for s in stocks:
@@ -647,11 +652,27 @@ def main():
                 r4(fw["rn"]), r4(fw["hi"]), r4(fw["lo"]),
             ])
 
-        with open(os.path.join(OUT, "data", "px", f"{code}.json"), "w", encoding="utf-8") as fh:
-            json.dump(encode_px(rows, adj, f), fh, separators=(",", ":"))
+        k0 = next((k for k, d in enumerate(dates) if d >= px_start.isoformat()), len(dates))
+        if k0 < len(dates):   # K 線圖只放 px_start 之後（檔案比較小）；更早的只給交易模擬用
+            with open(os.path.join(OUT, "data", "px", f"{code}.json"), "w", encoding="utf-8") as fh:
+                json.dump(encode_px(rows[k0:], adj[k0:], f[k0:]), fh, separators=(",", ":"))
+
+        # 交易模擬紀錄
+        in_cal = np.array([d in cal_idx for d in dates])
+        if in_cal.sum() > 1:
+            ii = np.nonzero(in_cal)[0]
+            cpos = np.array([cal_idx[dates[k]] for k in ii])
+            ao = np.array([rows[k][1] * f[k] for k in ii])
+            ac, rc, vv = adj[ii], raw_c[ii], vol[ii]
+            ok_d = np.array([dates[k] >= SIM_START and dates[k] >= listed for k in ii])
+            pick = {"s1": res["sig"][ii] & (res["type"][ii] == S.TYPE_FIRST) & ok_d,
+                    "lh80": S.compute_longhigh(ac, 80) & ok_d,
+                    "lh100": S.compute_longhigh(ac, 100) & ok_d}
+            for key, m in pick.items():
+                sim_recs[key] += SIM.stock_records(len(cal), cpos, ao, ac, rc, vv, np.nonzero(m)[0], idx)
 
         # 資料檢查
-        flags += check_stock(code, name, dates, adj, cal_idx, sig_start_s, fetch_first, listed)
+        flags += check_stock(code, name, dates, adj, cal_idx, SIM_START, fetch_first, listed)
         if dates[-1] < last_date and code not in reused:
             stale.append({"code": code, "name": name, "last": dates[-1]})
         first_pos = cal_idx.get(dates[0])
@@ -749,7 +770,25 @@ def main():
     with open(os.path.join(OUT, "data", "check.json"), "w", encoding="utf-8") as fh:
         json.dump(check, fh, ensure_ascii=False, indent=1)
     with open(os.path.join(OUT, "data", "official.json"), "w", encoding="utf-8") as fh:
-        json.dump(off.cache(px_start.isoformat()), fh, separators=(",", ":"))
+        json.dump(off.cache(fetch_start.isoformat()), fh, separators=(",", ":"))
+
+    # 交易模擬資料
+    os.makedirs(os.path.join(OUT, "data", "sim"), exist_ok=True)
+    bench_ff, last = [], None
+    for d in cal:
+        last = bench_adj.get(d, last)
+        bench_ff.append(round(last, 4) if last else None)
+    sim_meta = {"cal": [ymd_int(d) for d in cal], "bench": bench_ff, "sim_start": SIM_START,
+                "horizons": list(SIM.HORIZONS), "path_len": SIM.PATH_LEN, "rec": SIM.REC,
+                "limit": SIM.LIMIT, "strategies": {}}
+    for key, recs in sim_recs.items():
+        recs.sort(key=lambda b: b[:2])   # 依訊號日排序
+        with open(os.path.join(OUT, "data", "sim", f"{key}.bin"), "wb") as fh:
+            fh.write(b"".join(recs))
+        sim_meta["strategies"][key] = {"count": len(recs)}
+    with open(os.path.join(OUT, "data", "sim", "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(sim_meta, fh, separators=(",", ":"))
+    log("交易模擬資料：" + "、".join(f"{k} {len(v)} 筆" for k, v in sim_recs.items()))
     with open(os.path.join(OUT, ".nojekyll"), "w") as fh:
         fh.write("")
 

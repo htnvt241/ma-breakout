@@ -104,3 +104,35 @@ details summary { cursor: pointer; color: var(--text); margin-top: 10px; }
 #checkBody table { border-collapse: collapse; font-size: 12px; margin: 4px 0 10px; }
 #checkBody td, #checkBody th { padding: 2px 10px 2px 0; text-align: left; }
 .loading { padding: 40px; text-align: center; color: var(--muted); }
+
+/* 分頁 */
+.tabs { display: flex; gap: 4px; }
+.tabs a { color: var(--muted); text-decoration: none; padding: 6px 14px; border-radius: 8px; border: 1px solid transparent; font-size: 14px; }
+.tabs a:hover { color: var(--text); }
+.tabs a.on { color: var(--text); background: var(--panel); border-color: var(--border); font-weight: 600; }
+.top { margin-bottom: 8px; }
+
+/* 交易模擬 */
+.lead { max-width: 900px; font-size: 13.5px; }
+.simform { padding: 16px 18px; margin: 16px 0 8px; }
+.simform .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px 20px; }
+.simform label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.simform label .row { display: flex; gap: 6px; align-items: center; color: var(--text); }
+.simform select, .simform input[type=number] { width: 100%; }
+.simform .row input[type=number] { width: 80px; }
+.simform input[type=date] { flex: 1; min-width: 0; }
+label.check { flex-direction: row !important; align-items: center; gap: 8px; margin-top: 14px; color: var(--text) !important; font-size: 13px !important; }
+label.check.inline { display: inline-flex; margin: 0 0 0 12px; font-weight: normal; }
+.actions { margin-top: 14px; display: flex; align-items: center; gap: 12px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 7px 22px; font-weight: 600; }
+.small { font-size: 12px; }
+table.res { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+table.res th { background: var(--panel2); padding: 8px 10px; text-align: right; font-weight: 600; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+table.res td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--grid); font-family: var(--mono); }
+table.res .l { text-align: left; font-family: inherit; }
+.dist { font-size: 13px; margin: 10px 0; }
+.chartbox { padding: 8px; }
+.lc { height: 380px; }
+.lc.small { height: 200px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
