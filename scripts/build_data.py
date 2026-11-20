@@ -396,6 +396,16 @@ def insert_row(rows, d, o):
     return True
 
 
+def skip_publish():
+    """通知 GitHub Actions：這次不用發布（不算失敗）。"""
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a") as fh:
+            fh.write("skip=true\n")
+    if os.path.exists(OUT):
+        shutil.rmtree(OUT)
+
+
 def main():
     t0 = time.time()
     now = datetime.now(TPE)
@@ -437,7 +447,11 @@ def main():
     cal_idx = {d: i for i, d in enumerate(cal)}
     log(f"最新交易日 {last_date}（共 {len(cal)} 個交易日）")
     if prev_meta and prev_meta.get("last_date", "") > last_date:
-        sys.exit(f"❌ 這次抓到的最新交易日 {last_date} 比網站上的 {prev_meta['last_date']} 還舊，停止發布")
+        # 不是錯誤：Yahoo 偶爾在半夜暫時少最後一天。這次不發布、網站維持原樣，也不寄信。
+        log(f"⏭ 這次抓到的最新交易日 {last_date} 比網站上的 {prev_meta['last_date']} 還舊，"
+            f"這次略過不發布（網站維持原樣），下次排程再試")
+        skip_publish()
+        return
 
     # 3. 各股價格
     data, failed = {}, []

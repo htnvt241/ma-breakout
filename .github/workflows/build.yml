@@ -22,6 +22,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    outputs:
+      skip: ${{ steps.build.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,15 +32,18 @@ jobs:
       - name: 安裝套件
         run: pip install requests numpy
       - name: 抓資料、計算訊號、產生網站
+        id: build
         env:
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: python scripts/build_data.py
       - uses: actions/configure-pages@v5
+        if: steps.build.outputs.skip != 'true'
       - uses: actions/upload-pages-artifact@v3
+        if: steps.build.outputs.skip != 'true'
         with:
           path: _site
       - name: 資料檢查有新問題就開 Issue 通知（會寄 email）
-        if: always()
+        if: always() && steps.build.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
@@ -61,6 +66,7 @@ jobs:
 
   deploy:
     needs: build
+    if: needs.build.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
