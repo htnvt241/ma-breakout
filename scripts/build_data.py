@@ -441,17 +441,7 @@ def main():
     # 2. 大盤基準 0050
     bench = fetch_yahoo(BENCH[1], px_start)
     if not bench or len(bench) < 200:
-        sys.exit("❌ 0050（大盤基準與交易日曆）抓不到，停止發布")
-    cal = [r[0] for r in bench]
-    last_date = cal[-1]
-    cal_idx = {d: i for i, d in enumerate(cal)}
-    log(f"最新交易日 {last_date}（共 {len(cal)} 個交易日）")
-    if prev_meta and prev_meta.get("last_date", "") > last_date:
-        # 不是錯誤：Yahoo 偶爾在半夜暫時少最後一天。這次不發布、網站維持原樣，也不寄信。
-        log(f"⏭ 這次抓到的最新交易日 {last_date} 比網站上的 {prev_meta['last_date']} 還舊，"
-            f"這次略過不發布（網站維持原樣），下次排程再試")
-        skip_publish()
-        return
+        sys.exit("❌ 0050（大盤對照）抓不到，停止發布")
 
     # 3. 各股價格
     data, failed = {}, []
@@ -469,7 +459,7 @@ def main():
                 rows = None
                 log(f"  {s[0]} 抓取失敗：{e}")
             if rows:
-                data[s[0]] = [r for r in rows if r[0] <= last_date]
+                data[s[0]] = rows
             else:
                 failed.append(s)
             if done % 200 == 0:
@@ -488,6 +478,20 @@ def main():
     log(f"抓到新資料 {fresh}/{len(stocks)}（{ratio:.1%}），沿用舊資料 {len(reused)}，沒有資料 {len(nodata)}")
     if ratio < MIN_FRESH_RATIO:
         sys.exit(f"❌ 只有 {ratio:.1%} 的股票抓到新資料（門檻 {MIN_FRESH_RATIO:.0%}），停止發布，網站維持前一版")
+
+    # 最新交易日：超過三成股票（這次新抓到的）有資料的最後一天。
+    # 不用 0050 判斷：Yahoo 有時候 0050 會少最後一天甚至連缺好幾天，全部股票就會被卡住。
+    cnt = Counter(r[0] for code, rows in data.items() if code not in reused for r in rows)
+    last_date = max(d for d, k in cnt.items() if k >= 0.3 * max(1, fresh))
+    for code in data:
+        data[code] = [r for r in data[code] if r[0] <= last_date]
+    log(f"最新交易日 {last_date}（0050 在 Yahoo 的最後一天是 {bench[-1][0]}）")
+    if prev_meta and prev_meta.get("last_date", "") > last_date:
+        # 不是錯誤：Yahoo 偶爾在半夜暫時少最後一天。這次不發布、網站維持原樣，也不寄信。
+        log(f"⏭ 這次抓到的最新交易日 {last_date} 比網站上的 {prev_meta['last_date']} 還舊，"
+            f"這次略過不發布（網站維持原樣），下次排程再試")
+        skip_publish()
+        return
 
 
     # 3b. 用官方每日收盤行情修正 Yahoo 資料
