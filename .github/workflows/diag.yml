@@ -1,0 +1,21 @@
+name: 診斷（暫時）
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          pip install requests >/dev/null
+          python - <<'PY'
+          import requests, datetime as dt
+          H={"User-Agent":"Mozilla/5.0"}
+          js=requests.get("https://query2.finance.yahoo.com/v8/finance/chart/0050.TW?period1=1388534400&period2=%d&interval=1d&events=div%%2Csplit&includeAdjustedClose=true"%(int(dt.datetime.now().timestamp())+86400),headers=H,timeout=60).json()
+          r=js["chart"]["result"][0]; ts=r["timestamp"]; q=r["indicators"]["quote"][0]; a=r["indicators"]["adjclose"][0]["adjclose"]
+          ev=r.get("events",{})
+          rows={(dt.datetime.utcfromtimestamp(t)+dt.timedelta(hours=8)).date().isoformat():(q["close"][i],a[i]) for i,t in enumerate(ts)}
+          for d in ["2015-01-02","2015-01-05","2015-12-31","2018-12-28","2020-12-31","2022-12-30","2024-12-31","2025-06-17","2025-06-18","2025-12-31","2026-11-18","2026-11-20"]:
+              print(d, rows.get(d))
+          print("splits", ev.get("splits"))
+          for k,v in sorted((ev.get("dividends") or {}).items()):
+              print("div", (dt.datetime.utcfromtimestamp(int(k))+dt.timedelta(hours=8)).date(), v.get("amount"))
+          PY
